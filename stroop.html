@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stroop // human buffer overflow</title>
+<meta name="description" content="Demonstração interativa do efeito Stroop — diz a cor da tinta, não a palavra. Mede o atrito entre a leitura automática e a resposta consciente.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c0a06;
+    --bg-panel:#13100a;
+    --amber:#f0a818;
+    --amber-bright:#ffc24d;
+    --amber-dim:#8a6a2a;
+    --amber-faint:#5c4a24;
+    --line:#2a2212;
+    --alert:#ff4530;
+
+    --c-vermelho:#ff4530;
+    --c-azul:#3b9dff;
+    --c-verde:#38d96b;
+    --c-amarelo:#ffd23b;
+    --c-laranja:#ff8c1a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--amber);
+    font-family:"IBM Plex Mono",monospace;
+    font-size:15px;line-height:1.6;
+    min-height:100vh;
+    overflow-x:hidden;
+    display:flex;flex-direction:column;align-items:center;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;
+    background:repeating-linear-gradient(to bottom,
+      rgba(0,0,0,0) 0,rgba(0,0,0,0) 2px,rgba(0,0,0,.18) 3px,rgba(0,0,0,0) 4px);
+    pointer-events:none;z-index:9000;mix-blend-mode:multiply;
+  }
+  body::after{
+    content:"";position:fixed;inset:0;
+    background:radial-gradient(ellipse at center,rgba(240,168,24,.04) 0%,rgba(0,0,0,.55) 100%);
+    pointer-events:none;z-index:9001;
+  }
+
+  .wrap{width:100%;max-width:620px;padding:32px 24px 64px;position:relative;z-index:1}
+
+  .filetag{
+    font-size:11px;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--amber-dim);margin-bottom:28px;
+  }
+  h1{
+    font-family:"Space Mono",monospace;font-weight:700;
+    font-size:clamp(22px,5vw,30px);color:var(--amber-bright);
+    letter-spacing:.02em;text-shadow:0 0 14px rgba(240,168,24,.3);
+    line-height:1.2;margin-bottom:10px;
+  }
+  .sub{color:var(--amber-dim);font-size:13.5px;max-width:48ch;margin-bottom:26px}
+
+  .rule{
+    font-size:14px;color:var(--amber);
+    border:1px solid var(--line);background:var(--bg-panel);
+    padding:16px 18px;margin-bottom:26px;
+  }
+  .rule b{color:var(--amber-bright);font-weight:600}
+
+  .btn{
+    font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:.08em;
+    color:var(--amber);border:1px solid var(--amber-faint);background:transparent;
+    padding:11px 20px;cursor:pointer;transition:background .12s,color .12s;
+  }
+  .btn:hover,.btn:focus-visible{background:var(--amber);color:#0c0a06;outline:none}
+
+  /* ---- stage ---- */
+  .stage{display:none}
+  .stage.on{display:block}
+
+  .progress{
+    display:flex;justify-content:space-between;align-items:center;
+    font-size:12px;color:var(--amber-dim);letter-spacing:.1em;margin-bottom:22px;
+  }
+  .bar-track{flex:1;height:3px;background:var(--line);margin:0 14px;position:relative}
+  .bar-fill{position:absolute;left:0;top:0;height:100%;background:var(--amber);transition:width .15s ease}
+
+  .word-box{
+    border:1px solid var(--line);background:#000;
+    min-height:200px;display:flex;align-items:center;justify-content:center;
+    margin-bottom:26px;box-shadow:inset 0 0 50px rgba(0,0,0,.8);
+  }
+  .word{
+    font-family:"Space Mono",monospace;font-weight:700;
+    font-size:clamp(44px,13vw,80px);letter-spacing:.04em;
+    text-shadow:0 0 22px currentColor;
+    user-select:none;
+  }
+
+  .ask{text-align:center;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--amber-dim);margin-bottom:16px}
+
+  .pad{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .key{
+    background:var(--bg-panel);border:1px solid var(--line);
+    padding:14px 6px 11px;cursor:pointer;text-align:center;
+    transition:border-color .12s,transform .08s;
+  }
+  .key:hover,.key:focus-visible{border-color:var(--amber);outline:none}
+  .key:active{transform:translateY(1px)}
+  .swatch{height:30px;border-radius:2px;margin-bottom:9px;box-shadow:0 0 12px rgba(0,0,0,.4)}
+  .key .name{font-size:11px;color:var(--amber-dim);letter-spacing:.05em;text-transform:uppercase}
+  .key .num{font-size:10px;color:var(--amber-faint);margin-top:3px}
+
+  @media (max-width:480px){
+    .pad{grid-template-columns:repeat(5,1fr);gap:6px}
+    .key{padding:10px 2px 8px}
+    .key .name{font-size:9px}
+    .swatch{height:22px}
+  }
+
+  /* ---- results ---- */
+  .res-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:24px 0}
+  .stat{border:1px solid var(--line);background:var(--bg-panel);padding:16px}
+  .stat .k{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--amber-dim);margin-bottom:8px}
+  .stat .v{font-family:"Space Mono",monospace;font-size:26px;color:var(--amber-bright);font-weight:700}
+  .stat .v small{font-size:13px;color:var(--amber-dim);font-weight:400}
+
+  .compare{margin:8px 0 6px}
+  .cmp-row{margin-bottom:16px}
+  .cmp-label{display:flex;justify-content:space-between;font-size:12.5px;color:var(--amber);margin-bottom:7px;letter-spacing:.05em}
+  .cmp-label .ms{color:var(--amber-bright);font-family:"Space Mono",monospace}
+  .cmp-track{height:18px;background:#000;border:1px solid var(--line)}
+  .cmp-fill{height:100%;transition:width .6s cubic-bezier(.2,.7,.3,1)}
+  .cmp-fill.cong{background:var(--amber-dim)}
+  .cmp-fill.incong{background:var(--amber)}
+
+  .verdict{
+    border-left:2px solid var(--alert);padding:14px 18px;margin:22px 0;
+    background:var(--bg-panel);font-size:14px;color:var(--amber);
+  }
+  .verdict b{color:var(--amber-bright)}
+  .delta{color:var(--alert);font-family:"Space Mono",monospace;font-weight:700}
+
+  .why{font-size:13.5px;color:var(--amber-dim);max-width:58ch;margin:20px 0 26px}
+  .why p+p{margin-top:12px}
+  .why .hi{color:var(--amber)}
+
+  footer{font-size:12px;color:var(--amber-dim);margin-top:20px}
+  .cursor{display:inline-block;width:8px;height:13px;background:var(--amber);margin-left:2px;vertical-align:-2px;animation:blink 1.05s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  @media (prefers-reduced-motion:reduce){
+    .cursor{animation:none}
+    .cmp-fill,.bar-fill{transition:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="filetag">// lab · experimento 001 · human buffer overflow</div>
+
+  <!-- INTRO -->
+  <div class="stage on" id="intro">
+    <h1>O efeito Stroop</h1>
+    <p class="sub">Uma instrução que o teu cérebro executa antes de a parte racional ter hipótese de intervir.</p>
+    <div class="rule">
+      Vais ver uma palavra. Ignora o que ela <b>diz</b> — responde com a <b>cor da tinta</b> em que está escrita.<br><br>
+      Rápido como conseguires. No fim mostro-te quanto te custou.
+    </div>
+    <button class="btn" id="start">[ iniciar ]</button>
+  </div>
+
+  <!-- TEST -->
+  <div class="stage" id="test">
+    <div class="progress">
+      <span id="counter">01 / 20</span>
+      <span class="bar-track"><span class="bar-fill" id="barfill"></span></span>
+      <span id="hits">0 erros</span>
+    </div>
+    <div class="word-box"><span class="word" id="word">VERMELHO</span></div>
+    <div class="ask">qual é a cor da tinta?</div>
+    <div class="pad" id="pad"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="stage" id="results">
+    <h1>Resultado</h1>
+    <div class="res-grid">
+      <div class="stat"><div class="k">precisão</div><div class="v" id="r-acc">—</div></div>
+      <div class="stat"><div class="k">tempo médio</div><div class="v" id="r-avg">—</div></div>
+    </div>
+
+    <div class="compare">
+      <div class="cmp-row">
+        <div class="cmp-label"><span>congruente — palavra = tinta</span><span class="ms" id="r-cong">—</span></div>
+        <div class="cmp-track"><div class="cmp-fill cong" id="bar-cong" style="width:0"></div></div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-label"><span>incongruente — palavra ≠ tinta</span><span class="ms" id="r-incong">—</span></div>
+        <div class="cmp-track"><div class="cmp-fill incong" id="bar-incong" style="width:0"></div></div>
+      </div>
+    </div>
+
+    <div class="verdict" id="verdict"></div>
+
+    <div class="why">
+      <p>Ler é automático. É um processo tão treinado que dispara sozinho, mais depressa do que a tarefa consciente de identificar a cor. Quando a palavra e a tinta não coincidem, os dois processos colidem — e a leitura <span class="hi">atropela</span> a resposta que querias dar.</p>
+      <p>Não decides ler. Já leste. Existe um caminho que se executa <span class="hi">à revelia da vontade consciente</span> — exatamente como uma instrução injetada que se sobrepõe ao que o sistema devia fazer. O agente de IA, tal como tu diante da palavra colorida, não tem o ceticismo nem a pausa que travaria a resposta.</p>
+    </div>
+
+    <button class="btn" id="again">[ repetir ]</button>
+  </div>
+
+  <footer><span id="prompt">lab@layer8:~$</span> _stroop --run<span class="cursor"></span></footer>
+
+</div>
+
+<script>
+(function(){
+  var COLORS = [
+    {key:"vermelho", name:"vermelho", hex:"#ff4530"},
+    {key:"azul",     name:"azul",     hex:"#3b9dff"},
+    {key:"verde",    name:"verde",    hex:"#38d96b"},
+    {key:"amarelo",  name:"amarelo",  hex:"#ffd23b"},
+    {key:"laranja",  name:"laranja",  hex:"#ff8c1a"}
+  ];
+  var N = 20; // 10 congruentes + 10 incongruentes
+  var trials=[], idx=0, results=[], errors=0, t0=0, locked=false;
+
+  var el = function(id){return document.getElementById(id);};
+  var intro=el('intro'), test=el('test'), resultsView=el('results');
+
+  function show(stage){
+    [intro,test,resultsView].forEach(function(s){s.classList.remove('on');});
+    stage.classList.add('on');
+  }
+
+  function shuffle(a){
+    for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;}
+    return a;
+  }
+
+  function buildTrials(){
+    var t=[];
+    var half=N/2;
+    for(var i=0;i<half;i++){ // congruentes
+      var c=COLORS[Math.floor(Math.random()*COLORS.length)];
+      t.push({wordKey:c.key, inkKey:c.key, inkHex:c.hex, congruent:true});
+    }
+    for(var k=0;k<half;k++){ // incongruentes
+      var w=COLORS[Math.floor(Math.random()*COLORS.length)];
+      var ink;
+      do{ ink=COLORS[Math.floor(Math.random()*COLORS.length)]; }while(ink.key===w.key);
+      t.push({wordKey:w.key, inkKey:ink.key, inkHex:ink.hex, congruent:false});
+    }
+    return shuffle(t);
+  }
+
+  function buildPad(){
+    var pad=el('pad');
+    pad.innerHTML='';
+    COLORS.forEach(function(c,i){
+      var b=document.createElement('button');
+      b.className='key';
+      b.setAttribute('aria-label','tinta '+c.name);
+      b.innerHTML='<div class="swatch" style="background:'+c.hex+'"></div>'+
+                  '<div class="name">'+c.name+'</div>'+
+                  '<div class="num">'+(i+1)+'</div>';
+      b.addEventListener('click', function(){ answer(c.key); });
+      pad.appendChild(b);
+    });
+  }
+
+  function renderTrial(){
+    var tr=trials[idx];
+    var w=el('word');
+    w.textContent=tr.wordKey.toUpperCase();
+    w.style.color=tr.inkHex;
+    el('counter').textContent=pad2(idx+1)+' / '+N;
+    el('hits').textContent=errors+(errors===1?' erro':' erros');
+    el('barfill').style.width=((idx)/N*100)+'%';
+    locked=false;
+    t0=performance.now();
+  }
+
+  function pad2(n){return (n<10?'0':'')+n;}
+
+  function answer(colorKey){
+    if(locked) return;
+    locked=true;
+    var rt=performance.now()-t0;
+    var tr=trials[idx];
+    var correct=(colorKey===tr.inkKey);
+    if(!correct) errors++;
+    results.push({rt:rt, correct:correct, congruent:tr.congruent});
+    idx++;
+    if(idx>=N){ finish(); } else { renderTrial(); }
+  }
+
+  function avg(arr){ return arr.length? arr.reduce(function(a,b){return a+b;},0)/arr.length : 0; }
+
+  function finish(){
+    var correct=results.filter(function(r){return r.correct;});
+    var acc=Math.round(correct.length/results.length*100);
+
+    var congRT=correct.filter(function(r){return r.congruent;}).map(function(r){return r.rt;});
+    var incRT=correct.filter(function(r){return !r.congruent;}).map(function(r){return r.rt;});
+    var cAvg=avg(congRT), iAvg=avg(incRT), allAvg=avg(correct.map(function(r){return r.rt;}));
+
+    el('r-acc').innerHTML=acc+'<small>%</small>';
+    el('r-avg').innerHTML=Math.round(allAvg)+'<small> ms</small>';
+    el('r-cong').textContent=Math.round(cAvg)+' ms';
+    el('r-incong').textContent=Math.round(iAvg)+' ms';
+
+    var maxAvg=Math.max(cAvg,iAvg,1);
+    el('bar-cong').style.width=(cAvg/maxAvg*100)+'%';
+    el('bar-incong').style.width=(iAvg/maxAvg*100)+'%';
+
+    var delta=Math.round(iAvg-cAvg);
+    var v=el('verdict');
+    if(delta>40){
+      v.innerHTML='Demoraste <span class="delta">+'+delta+' ms</span> em média quando a palavra e a tinta não coincidiam. '+
+                  '<b>Esse atraso não é falta de jeito — é a leitura automática a executar primeiro.</b> O teu buffer overflow.';
+    } else if(delta>=0){
+      v.innerHTML='A diferença foi pequena (<span class="delta">+'+delta+' ms</span>) — ou és rápido a suprimir o automatismo, ou a amostra é curta. '+
+                  '<b>Repete: o efeito costuma aparecer com mais ensaios.</b>';
+    } else {
+      v.innerHTML='Curiosamente foste mais rápido nos incongruentes ('+delta+' ms). '+
+                  '<b>Amostra pequena ou já estavas a antecipar.</b> Repete para um valor mais limpo.';
+    }
+    el('barfill').style.width='100%';
+    show(resultsView);
+  }
+
+  function startTest(){
+    trials=buildTrials(); idx=0; results=[]; errors=0;
+    buildPad();
+    show(test);
+    renderTrial();
+  }
+
+  el('start').addEventListener('click', startTest);
+  el('again').addEventListener('click', startTest);
+
+  document.addEventListener('keydown', function(e){
+    if(!test.classList.contains('on')) return;
+    var n=parseInt(e.key,10);
+    if(n>=1 && n<=COLORS.length){ answer(COLORS[n-1].key); }
+  });
+})();
+</script>
+</body>
+</html>
